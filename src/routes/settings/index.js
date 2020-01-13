@@ -1,34 +1,41 @@
 import { h, Component } from 'preact';
-import { DB } from '../../utils/db';
 import { ymd } from '../../utils/date';
 import { slugify } from '../../utils/slugify';
 import { QuestionList } from '../../components/QuestionList';
 import { AddQuestion } from '../../components/AddQuestion';
 import { ScaryButton } from '../../components/ScaryButton';
-import { getDefaultTheme } from '../../utils/theme';
+import { getDefaultTheme, prefersAnimation } from '../../utils/theme';
+import { actions } from '../../store/actions';
+import { connect } from 'unistore/preact';
+import { getTrackingQuestions } from '../../utils/questions';
+import { TrackingQuestionList } from '../../components/TrackingQuestionList';
+import { Link } from 'preact-router';
 
-export default class Questions extends Component {
+class Settings extends Component {
   state = {
-    db: null,
     questions: [],
     exporting: 0,
     importing: false,
     files: [],
-    theme: getDefaultTheme(),
+    trackingQuestions: [],
   };
 
-  async componentDidMount() {
-    const db = new DB();
-    const keys = await db.keys('questions');
-    const questions = await Promise.all(keys.map(x => db.get('questions', x)));
-    this.setState({ db, questions });
+  async componentWillMount() {
+    const keys = await this.props.db.keys('questions');
+    const questions = await Promise.all(
+      keys.map(x => this.props.db.get('questions', x))
+    );
+    questions.sort((a, b) => a.createdAt - b.createdAt);
+
+    const trackingQuestions = await getTrackingQuestions(this.props.db);
+
+    this.setState({ questions, trackingQuestions });
   }
 
-  updateTheme = event => {
-    const theme = event.target.value;
-    localStorage.setItem('journalbook_theme', theme);
-    document.querySelector('#app').dataset.theme = theme;
-    this.setState({ theme });
+  updateSetting = key => {
+    return event => {
+      this.props.updateSetting({ key, value: event.target.value });
+    };
   };
 
   updateQuestion = (slug, value, attribute = 'text') => {
@@ -39,7 +46,7 @@ export default class Questions extends Component {
     }
 
     question[attribute] = value;
-    this.state.db.set('questions', slug, question);
+    this.props.db.set('questions', slug, question);
 
     this.setState({ questions });
   };
@@ -48,13 +55,55 @@ export default class Questions extends Component {
     this.updateQuestion(slug, value, 'status');
   };
 
+  updateTrackingQuestion = (
+    id,
+    value,
+    attribute = 'text',
+    settings = false
+  ) => {
+    const trackingQuestions = [...this.state.trackingQuestions];
+    const question = trackingQuestions.find(x => x.id === id);
+
+    if (!question) {
+      return;
+    }
+
+    if (settings) {
+      question.settings[attribute] = value;
+    } else {
+      question[attribute] = value;
+    }
+    this.props.db.set('trackingQuestions', id, question);
+
+    this.setState({ trackingQuestions });
+  };
+
+  updateTrackingOption = (id, value, index, remove = false) => {
+    const trackingQuestions = [...this.state.trackingQuestions];
+    const question = trackingQuestions.find(x => x.id === id);
+
+    if (!question) {
+      return;
+    }
+
+    if (remove) {
+      question.settings.options.splice(index, 1);
+    } else {
+      question.settings.options[index] = value;
+    }
+
+    this.props.db.set('trackingQuestions', id, question);
+
+    this.setState({ trackingQuestions });
+  };
+
   addQuestion = async event => {
     event.preventDefault();
     const text = event.target.question.value;
     const slug = slugify(text);
     const question = { slug, text, status: 'live', createdAt: Date.now() };
 
-    await this.state.db.set('questions', slug, question);
+    await this.props.db.set('questions', slug, question);
 
     localStorage.setItem('journalbook_onboarded', true);
     const questions = [...this.state.questions];
@@ -65,30 +114,36 @@ export default class Questions extends Component {
 
   getData = async () => {
     try {
-      const questionValues = await this.state.db.getAll('questions');
+      const questionValues = await this.props.db.getAll('questions');
       const questions = questionValues.reduce((current, value, index) => {
         current[value.slug] = value;
         return current;
       }, {});
 
-      const entryKeys = await this.state.db.keys('entries');
-      const entryValues = await Promise.all(
-        entryKeys.map(key => this.state.db.get('entries', key))
+      const entries = await this.props.db.getObject('entries');
+      const highlights = await this.props.db.keys('highlights');
+      const settings = await this.props.db.getObject('settings');
+      const trackingEntries = await this.props.db.getObject('trackingEntries');
+      const trackingQuestions = await this.props.db.getObject(
+        'trackingQuestions'
       );
 
-      const entries = entryValues.reduce((current, entry, index) => {
-        current[entryKeys[index]] = entry;
-        return current;
-      }, {});
-
-      const highlights = await this.state.db.keys('highlights');
-
-      return { questions, entries, highlights };
+      return {
+        questions,
+        entries,
+        highlights,
+        settings,
+        trackingEntries,
+        trackingQuestions,
+      };
     } catch (e) {
       return {
         questions: {},
         entries: {},
         highlights: [],
+        settings: {},
+        trackingEntries: {},
+        trackingQuestions: {},
       };
     }
   };
@@ -129,35 +184,76 @@ export default class Questions extends Component {
     this.setState({ importing: true });
 
     reader.onload = (() => async e => {
-      const { entries, questions, highlights = [] } = JSON.parse(
-        e.target.result
-      );
+      const {
+        entries,
+        questions,
+        highlights = [],
+        settings = {},
+        trackingQuestions = {},
+        trackingEntries = {},
+      } = JSON.parse(e.target.result);
       if (!entries || !questions || !Array.isArray(highlights)) {
         return;
       }
 
       const questionKeys = Object.keys(questions);
       questionKeys.map(async key => {
-        const current = await this.state.db.get('questions', key);
+        const current = await this.props.db.get('questions', key);
         if (!current) {
-          await this.state.db.set('questions', key, questions[key]);
+          await this.props.db.set('questions', key, questions[key]);
         }
       });
 
       const entryKeys = Object.keys(entries);
       await Promise.all(
         entryKeys.map(async key => {
-          const current = await this.state.db.get('entries', key);
+          const current = await this.props.db.get('entries', key);
           if (!current) {
-            return this.state.db.set('entries', key, entries[key]);
+            return this.props.db.set('entries', key, entries[key]);
+          }
+        })
+      );
+
+      const trackingQuestionKeys = Object.keys(trackingQuestions);
+      await Promise.all(
+        trackingQuestionKeys.map(async key => {
+          const current = await this.props.db.get('trackingQuestions', key);
+          if (!current) {
+            return this.props.db.set(
+              'trackingQuestions',
+              key,
+              trackingQuestions[key]
+            );
+          }
+        })
+      );
+
+      const trackingEntryKeys = Object.keys(trackingEntries);
+      await Promise.all(
+        trackingEntryKeys.map(async key => {
+          const current = await this.props.db.get('trackingEntries', key);
+          if (!current) {
+            return this.props.db.set(
+              'trackingEntries',
+              key,
+              trackingEntries[key]
+            );
+          }
+        })
+      );
+
+      const settingKeys = Object.keys(settings);
+      await Promise.all(
+        settingKeys.map(async key => {
+          const current = await this.props.db.get('settings', key);
+          if (!current) {
+            return this.props.db.set('settings', key, settings[key]);
           }
         })
       );
 
       await Promise.all(
-        highlights.map(async key => {
-          return this.state.db.set('highlights', key, true);
-        })
+        highlights.map(async key => this.props.db.set('highlights', key, true))
       );
 
       localStorage.setItem('journalbook_onboarded', true);
@@ -170,26 +266,28 @@ export default class Questions extends Component {
   };
 
   deleteData = async () => {
-    await this.state.db.clear('entries');
-    await this.state.db.clear('questions');
+    await this.props.db.clear('entries');
+    await this.props.db.clear('questions');
+    await this.props.db.clear('highlights');
+    await this.props.db.clear('highlights');
+    await this.props.db.clear('settings');
+    await this.props.db.clear('trackingEntries');
+    await this.props.db.clear('trackingQuestions');
     localStorage.removeItem('journalbook_onboarded');
+    localStorage.removeItem('journalbook_dates_migrated');
     window.location.href = '/';
   };
 
-  render(props, { questions, exporting, files, importing, theme = '' }) {
+  render(
+    { settings = {} },
+    { questions, exporting, files, importing, trackingQuestions }
+  ) {
+    const theme = settings.theme || getDefaultTheme(settings);
+    const animation = settings.animation || prefersAnimation(settings);
+
     return (
       <div class="wrap lift-children">
-        <QuestionList
-          questions={questions}
-          updateQuestion={this.updateQuestion}
-          updateQuestionStatus={this.updateQuestionStatus}
-        />
-
-        <AddQuestion addQuestion={this.addQuestion} />
-
         <div>
-          <hr />
-
           <h2>Manage your data</h2>
 
           {exporting === 2 && files.length ? (
@@ -212,7 +310,7 @@ export default class Questions extends Component {
               class={`button button--space button--grey`}
               onClick={this.prepareExport}
             >
-              {['Export', 'Exporting'][exporting]}
+              {['Backup', 'Backing up'][exporting]}
             </button>
           )}
 
@@ -227,21 +325,72 @@ export default class Questions extends Component {
             {importing ? 'Importing...' : 'Import'}
           </label>
 
-          <ScaryButton onClick={this.deleteData}>Delete your data</ScaryButton>
+          <hr />
         </div>
 
         <div>
-          <hr />
-          <label for="theme">Theme</label>
-          <select id="theme" onChange={this.updateTheme} value={theme}>
-            <option value="">Default</option>
-            <option value="dark">Dark</option>
-          </select>
+          <h2 class="mb20">Your journaling questions</h2>
+          <QuestionList
+            questions={questions}
+            updateQuestion={this.updateQuestion}
+            updateQuestionStatus={this.updateQuestionStatus}
+          />
+          <Link class="button button--grey" href="/add-journal-question/">
+            Add {questions.length ? 'another' : 'a'} question
+          </Link>
 
-          <br />
-          <br />
+          <hr />
+        </div>
+
+        <div>
+          <h2 class="mb20">Your personal statistics</h2>
+          <TrackingQuestionList
+            trackingQuestions={trackingQuestions}
+            updateTrackingQuestion={this.updateTrackingQuestion}
+            updateTrackingOption={this.updateTrackingOption}
+          />
+          <Link class="button button--grey" href="/add-statistic-question/">
+            Add {trackingQuestions.length ? 'another' : 'a'} question
+          </Link>
+          <hr />
+        </div>
+
+        <div className="mb40">
+          <p>
+            <label for="theme">Theme</label>
+            <select
+              id="theme"
+              onChange={this.updateSetting('theme')}
+              value={theme}
+            >
+              <option value="">Default</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+              <option value="rose">Rose</option>
+            </select>
+          </p>
+
+          <p>
+            <label for="animation">Animation</label>
+            <select
+              id="animation"
+              onChange={this.updateSetting('animation')}
+              value={animation}
+            >
+              <option value="">Default</option>
+              <option value="on">On</option>
+              <option value="off">Off</option>
+            </select>
+          </p>
+
+          <ScaryButton onClick={this.deleteData}>Delete your data</ScaryButton>
         </div>
       </div>
     );
   }
 }
+
+export default connect(
+  'settings, db',
+  actions
+)(Settings);

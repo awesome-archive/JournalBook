@@ -5,11 +5,11 @@ import {
   pad,
   shortDate,
 } from '../../utils/date';
-import { DB } from '../../utils/db';
 import Traverse from '../../components/Traverse';
 import { Link } from 'preact-router/match';
+import { connect } from 'unistore/preact';
 
-export default class Month extends Component {
+class Month extends Component {
   state = {
     months: filledArray(),
   };
@@ -31,9 +31,10 @@ export default class Month extends Component {
       return;
     }
 
-    const db = new DB();
     const daysInMonth = new Date(year, month + 1, 0).getDate();
-    const dates = await db.keys('entries');
+    let dates = await this.props.db.keys('entries');
+    const trackingEntries = await this.props.db.keys('trackingEntries');
+    dates = [...dates, ...trackingEntries];
 
     const days = dates
       .map(x => x.split('_').shift())
@@ -49,15 +50,11 @@ export default class Month extends Component {
 
   render({ year, month }, { days = [] }) {
     month = Number(month - 1);
-    const today = new Date();
     const lastMonth = new Date(year, month, 1);
     lastMonth.setMonth(lastMonth.getMonth() - 1);
 
     const nextMonth = new Date(year, month, 1);
     nextMonth.setMonth(nextMonth.getMonth() + 1);
-
-    const isThisMonth =
-      today.getMonth() === month && today.getFullYear() === Number(year);
 
     return (
       <div class="wrap lift-children">
@@ -70,12 +67,9 @@ export default class Month extends Component {
           lastLink={`/${lastMonth.getFullYear()}/${pad(
             lastMonth.getMonth() + 1
           )}`}
-          nextLink={
-            isThisMonth
-              ? ''
-              : `/${nextMonth.getFullYear()}/${pad(nextMonth.getMonth() + 1)}`
-          }
-          disableNext={isThisMonth}
+          nextLink={`/${nextMonth.getFullYear()}/${pad(
+            nextMonth.getMonth() + 1
+          )}`}
         />
         <ul class="year-overview">
           {days
@@ -102,3 +96,5 @@ export default class Month extends Component {
     );
   }
 }
+
+export default connect('db')(Month);

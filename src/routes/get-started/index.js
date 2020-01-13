@@ -1,38 +1,34 @@
 import { h, Component } from 'preact';
-import { DB } from '../../utils/db';
 import { slugify } from '../../utils/slugify';
 import { Link } from 'preact-router/match';
 import { url } from '../../utils/date';
 import { QuestionList } from '../../components/QuestionList';
 import { AddQuestion } from '../../components/AddQuestion';
-import { DBError } from '../../components/DBError';
+import { connect } from 'unistore/preact';
 
 const today = url();
 
-export default class GetStarted extends Component {
+class GetStarted extends Component {
   state = {
-    db: null,
     questions: [],
     defaultQuestions: [
       "What's happened today?",
       'What are you thankful for?',
       'What would you change about today?',
       'Notes and musings',
+      'What did you work on yesterday?',
+      'What are you planning on working on today?',
     ],
-    dbError: false,
   };
 
-  async componentDidMount() {
-    try {
-      const db = await new DB();
-      const keys = await db.keys('questions');
-      const questions = await Promise.all(
-        keys.map(x => db.get('questions', x))
-      );
-      this.setState({ db, questions });
-    } catch (e) {
-      this.setState({ dbError: true });
-    }
+  async componentWillMount() {
+    const keys = await this.props.db.keys('questions');
+    const questions = await Promise.all(
+      keys.map(x => this.props.db.get('questions', x))
+    );
+    questions.sort((a, b) => a.createdAt - b.createdAt);
+
+    this.setState({ questions });
   }
 
   onboard() {
@@ -47,7 +43,7 @@ export default class GetStarted extends Component {
     }
 
     question[attribute] = value;
-    this.state.db.set('questions', slug, question);
+    this.props.db.set('questions', slug, question);
 
     this.setState({ questions });
   };
@@ -60,7 +56,7 @@ export default class GetStarted extends Component {
     const slug = slugify(text);
     const question = { slug, text, status: 'live', createdAt: Date.now() };
 
-    await this.state.db.set('questions', slug, question);
+    await this.props.db.set('questions', slug, question);
 
     this.onboard();
     const questions = [...this.state.questions];
@@ -80,7 +76,7 @@ export default class GetStarted extends Component {
     });
   };
 
-  render(props, { questions, defaultQuestions, dbError }) {
+  render(props, { questions, defaultQuestions }) {
     return (
       <div class="wrap lift-children">
         <img src="/assets/images/welcome.svg" class="home-image" alt="" />
@@ -103,8 +99,7 @@ export default class GetStarted extends Component {
         </div>
 
         {questions && questions.length ? (
-          <div class="center lift--without-delay">
-            <br />
+          <div class="center lift--without-delay mt20">
             <Link href={today} class="button">
               Start writing!
             </Link>
@@ -114,14 +109,21 @@ export default class GetStarted extends Component {
         <AddQuestion
           addQuestion={this.addQuestion}
           label="Or write your own!"
+          plus
         />
 
-        <div>
-          <a onClick={this.onboard} href="/settings">
+        <div className="mb40">
+          <a
+            class="button button--grey mr20"
+            onClick={this.onboard}
+            href="/settings"
+          >
             Import an existing JournalBook
           </a>
-          <br />
-          <br />
+
+          <Link class="button button--grey" href="/add-statistic-question">
+            Add a personal statistic to track
+          </Link>
         </div>
 
         <QuestionList
@@ -131,20 +133,15 @@ export default class GetStarted extends Component {
         />
 
         {questions && questions.length ? (
-          <div class="center lift--without-delay">
-            <br />
+          <div class="center lift--without-delay mt20 mb40">
             <Link href={today} class="button">
               Start writing!
             </Link>
-            <br />
-            <br />
           </div>
         ) : null}
-
-        {dbError && (
-          <DBError toggle={() => this.setState({ dbError: false })} />
-        )}
       </div>
     );
   }
 }
+
+export default connect('db')(GetStarted);

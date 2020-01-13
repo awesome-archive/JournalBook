@@ -1,10 +1,10 @@
-import idb from 'idb';
+import { openDb } from 'idb';
 
 export class DB {
   db;
 
-  constructor(db) {
-    this.db = idb.open('entries-store');
+  constructor(dbPromise) {
+    this.db = dbPromise || openDb('entries-store');
   }
 
   get(table, key) {
@@ -66,5 +66,15 @@ export class DB {
         .objectStore(table)
         .getAll()
     );
+  }
+
+  async getObject(table) {
+    const keys = await this.keys(table);
+    const values = await Promise.all(keys.map(key => this.get(table, key)));
+
+    return values.reduce((current, entry, index) => {
+      current[keys[index]] = entry;
+      return current;
+    }, {});
   }
 }
